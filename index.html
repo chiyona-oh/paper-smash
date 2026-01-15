@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>시험기간 스트레스 해소용 시험지 뿌시기 게임</title>
+  <style>
+    body { margin: 0; background: #111; color: #fff; font-family: system-ui, sans-serif; }
+    .wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; }
+
+    .title {
+      width: 360px; max-width: 95vw;
+      font-size: 16px; font-weight: 800;
+      padding: 12px 12px;
+      border-radius: 14px;
+      text-align: center;
+      color: #ffe66b;
+      background: linear-gradient(180deg, rgba(255,230,107,0.10), rgba(0,0,0,0.25));
+      border: 1px solid rgba(255,230,107,0.35);
+      text-shadow: 0 1px 0 rgba(0,0,0,0.55);
+      letter-spacing: -0.2px;
+    }
+
+    canvas {
+      background: #1b1b1b;
+      border: 1px solid #333;
+      border-radius: 12px;
+      touch-action: manipulation;
+    }
+
+    /* HUD: 필요한 정보만 남김(학년/진행) */
+    .hud {
+      width: 360px; max-width: 95vw;
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 6px; font-size: 14px; opacity: 0.95;
+    }
+    .hud > div { background: rgba(255,255,255,0.06); padding: 8px 10px; border-radius: 10px; }
+
+    .btns { width: 360px; max-width: 95vw; display: flex; gap: 8px; }
+    button { flex: 1; padding: 10px 12px; border-radius: 10px; border: 0; cursor: pointer; }
+
+    .footer {
+      width: 360px; max-width: 95vw;
+      text-align: center;
+      font-size: 12px;
+      opacity: 0.65;
+      padding: 6px 0 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">시험기간 스트레스 해소용 시험지 뿌시기 게임</div>
+
+    <!-- 통과조건/상태는 숨기고, 필요한 것만 표시 -->
+    <div class="hud">
+      <div id="grade">학년: 중학교 1학년</div>
+      <div id="progress">진행: 0 / 10 (클릭: 0)</div>
+    </div>
+
+    <canvas id="game" width="360" height="640"></canvas>
+
+    <div class="btns">
+      <button id="startBtn">시작</button>
+      <button id="restartBtn">리셋</button>
+      <button id="muteBtn">🔊 음악</button>
+    </div>
+
+    <div class="footer">Created by Chiyona</div>
+  </div>
+
+  <script>
+    // 중복 실행 방지
+    if (window.__PAPER_GAME_LOADED__) {
+      console.warn("Game already loaded - preventing duplicate init.");
+      throw new Error("Duplicate load prevented");
+    }
+    window.__PAPER_GAME_LOADED__ = true;
+
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const gradeEl = document.getElementById("grade");
+    const progressEl = document.getElementById("progress");
+
+    const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const muteBtn = document.getElementById("muteBtn");
+
+    // 스테이지 규칙
+    const STAGES = [
+      { label: "중학교 1학년", total: 10, pass: 5,  school: "middle" },
+      { label: "중학교 2학년", total: 15, pass: 10, school: "middle" },
+      { label: "중학교 3학년", total: 20, pass: 15, school: "middle" },
+      { label: "고등학교 1학년", total: 25, pass: 20, school: "high"   },
+      { label: "고등학교 2학년", total: 30, pass: 25, school: "high"   },
+      { label: "고등학교 3학년", total: 35, pass: 30, school: "high"   },
+    ];
+
+    // 비주얼
+    const PAPER_W = 92;
+    const PAPER_H = 58;
+
+    function getPaperStyle() {
+      const school = STAGES[stageIndex].school;
+      if (school === "high") {
+        return {
+          fill: "#ffe66b",
+          stroke: "rgba(0,0,0,0.45)",
+          line: "rgba(0,0,0,0.18)",
+          text: "rgba(0,0,0,0.78)"
+        };
+      }
+      return {
+        fill: "#f4f4f4",
+        stroke: "rgba(0,0,0,0.35)",
+        line: "rgba(0,0,0,0.15)",
+        text: "rgba(0,0,0,0.72)"
+      };
+    }
+
+    // 난이도(조금 더 빠르게)
+    function getSpawnIntervalMs() {
+      const base = 520;
+      const perStage = 45 * stageIndex;
+      const highBoost = (STAGES[stageIndex].school === "high") ? 80 : 0;
+      return Math.max(160, base - perStage - highBoost);
+    }
+
+    function getFallSpeed() {
+      const baseMin = 260;
+      const baseMax = 380;
+
+      const perStageMin = 22 * stageIndex;
+      const perStageMax = 30 * stageIndex;
+
+      const highAddMin = (STAGES[stageIndex].school === "high") ? 60 : 0;
+      const highAddMax = (STAGES[stageIndex].school === "high") ? 90 : 0;
+
+      const min = baseMin + perStageMin + highAddMin;
+      const max = baseMax + perStageMax + highAddMax;
+
+      return min + Math.random() * (max - min);
+    }
+
+    // 오디오
+    let audioCtx = null;
+    let musicOn = true;
+    let bgmTimer = null;
+
+    function ensureAudio() {
+      if (audioCtx) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    function playTone(freq, durationSec, type = "sine", gain = 0.06) {
+      ensureAudio();
+      const now = audioCtx.currentTime;
+
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+
+      o.type = type;
+      o.frequency.value = freq;
+
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(gain, now + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+      o.connect(g);
+      g.connect(audioCtx.destination);
+
+      o.start(now);
+      o.stop(now + durationSec + 0.02);
+    }
+
+    function startBgm() {
+      if (!musicOn) return;
+      ensureAudio();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      stopBgm();
+
+      const seq = [523.25, 659.25, 783.99, 659.25, 587.33, 659.25, 523.25, 392.00];
+      let idx = 0;
+
+      bgmTimer = setInterval(() => {
+        if (!audioCtx || !musicOn) return;
+        playTone(seq[idx % seq.length], 0.18, "square", 0.045);
+        idx++;
+      }, 210);
+    }
+
+    function stopBgm() {
+      if (bgmTimer) {
+        clearInterval(bgmTimer);
+        bgmTimer = null;
+      }
+    }
+
+    function playSuccessJingle() {
+      if (!musicOn) return;
+      ensureAudio();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      const notes = [523.25, 659.25, 783.99, 1046.50];
+      let t = 0;
+      for (const f of notes) {
+        setTimeout(() => playTone(f, 0.16, "triangle", 0.08), t);
+        t += 170;
+      }
+    }
+
+    function toggleMusic() {
+      musicOn = !musicOn;
+      muteBtn.textContent = musicOn ? "🔊 음악" : "🔇 무음";
+      if (musicOn && running) startBgm();
+      else stopBgm();
+    }
+
+    // 게임 상태
+    let stageIndex = 0;
+
+    let running = false;        // 루프가 도는지
+    let stageActive = false;    // 현재 스테이지가 진행 중인지 (성공 후에는 false로 멈춤)
+    let pausedOverlay = false;
+
+    const papers = [];
+    let lastTime = 0;
+    let lastSpawn = 0;
+
+    let resolvedCount = 0; // 클릭+바닥 포함 처리 수
+    let hitCount = 0;      // 클릭 수
+
+    let overlay = null;    // { type, until, text1, text2 }
+
+    function currentStage() {
+      return STAGES[stageIndex];
+    }
+
+    function updateHUD() {
+      const s = currentStage();
+      gradeEl.textContent = `학년: ${s.label}`;
+      progressEl.textContent = `진행: ${resolvedCount} / ${s.total} (클릭: ${hitCount})`;
+    }
+
+    function startStage() {
+      // 스테이지 시작(또는 다음 스테이지 시작)
+      stageActive = true;
+      pausedOverlay = false;
+      overlay = null;
+
+      resolvedCount = 0;
+      hitCount = 0;
+      papers.length = 0;
+
+      lastSpawn = 0;
+      updateHUD();
+    }
+
+    function resetGame() {
+      running = false;
+      stageActive = false;
+      pausedOverlay = false;
+
+      stageIndex = 0;
+
+      resolvedCount = 0;
+      hitCount = 0;
+
+      papers.length = 0;
+      lastTime = 0;
+      lastSpawn = 0;
+      overlay = null;
+
+      stopBgm();
+      draw();
+      updateHUD();
+    }
+
+    function startLoopIfNeeded() {
+      if (running) return;
+      running = true;
+      lastTime = performance.now();
+      if (musicOn) startBgm();
+      requestAnimationFrame(loop);
+    }
+
+    function spawnPaper() {
+      const x = Math.random() * (canvas.width - PAPER_W);
+      const y = -PAPER_H;
+      const speed = getFallSpeed();
+      papers.push({ x, y, w: PAPER_W, h: PAPER_H, speed });
+    }
+
+    function loop(t) {
+      if (!running) return;
+
+      const dt = (t - lastTime) / 1000;
+      lastTime = t;
+
+      if (stageActive && !pausedOverlay) {
+        const s = currentStage();
+        const interval = getSpawnIntervalMs();
+
+        // 총 개수까지만 생성
+        if (resolvedCount + papers.length < s.total) {
+          if (t - lastSpawn > interval) {
+            spawnPaper();
+            lastSpawn = t;
+          }
+        }
+
+        // 이동/바닥 처리
+        for (let i = papers.length - 1; i >= 0; i--) {
+          papers[i].y += papers[i].speed * dt;
+          if (papers[i].y > canvas.height) {
+            papers.splice(i, 1);
+            resolvedCount += 1;
+            checkStageEnd(t);
+          }
+        }
+
+        checkStageEnd(t);
+      }
+
+      draw();
+
+      // 오버레이 처리
+      if (overlay && t < overlay.until) {
+        drawOverlay(overlay.type, overlay.text1, overlay.text2);
+      } else if (overlay && t >= overlay.until) {
+        const wasSuccess = overlay.type === "success";
+        overlay = null;
+
+        if (wasSuccess) {
+          // 성공 후: 자동 진행하지 않고 멈춤
+          stageActive = false;
+          pausedOverlay = false;
+
+          // 다음 스테이지로 인덱스만 올려두고, Start를 눌러야 시작
+          if (stageIndex + 1 < STAGES.length) {
+            stageIndex += 1;
+            updateHUD();
+            drawOverlay("success", "성공!", "다음 단계는 시작을 누르세요");
+          } else {
+            // 마지막까지 성공
+            running = false;
+            stopBgm();
+            drawOverlay("success", "전부 통과!", "고3까지 클리어!");
+          }
+        } else {
+          // 실패: 멈춤
+          running = false;
+          stopBgm();
+          drawFailFinal();
+        }
+      }
+
+      updateHUD();
+
+      if (running) requestAnimationFrame(loop);
+    }
+
+    function checkStageEnd(t) {
+      const s = currentStage();
+      const allSpawned = (resolvedCount + papers.length) >= s.total;
+
+      if (allSpawned && papers.length === 0) {
+        pausedOverlay = true;
+
+        if (hitCount >= s.pass) {
+          overlay = {
+            type: "success",
+            until: t + 1200,
+            text1: "성공!",
+            text2: `${s.label} 통과!`
+          };
+          playSuccessJingle();
+        } else {
+          overlay = {
+            type: "fail",
+            until: t + 1400,
+            text1: "실패!",
+            text2: `클릭 ${hitCount}개 (필요: ${s.pass}개)`
+          };
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 상단 바는 텍스트 없이 아주 약하게만 유지(완전 빈 느낌 방지)
+      ctx.fillStyle = "rgba(255,255,255,0.04)";
+      ctx.fillRect(0, 0, canvas.width, 44);
+
+      const style = getPaperStyle();
+
+      for (const p of papers) {
+        ctx.fillStyle = style.fill;
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+
+        ctx.strokeStyle = style.stroke;
+        ctx.strokeRect(p.x, p.y, p.w, p.h);
+
+        ctx.fillStyle = style.line;
+        ctx.fillRect(p.x + 10, p.y + 14, p.w - 20, 3);
+        ctx.fillRect(p.x + 10, p.y + 24, p.w - 34, 3);
+        ctx.fillRect(p.x + 10, p.y + 34, p.w - 26, 3);
+
+        ctx.fillStyle = style.text;
+        ctx.font = "12px system-ui";
+        ctx.fillText("시험지", p.x + 10, p.y + 50);
+      }
+
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.beginPath();
+      ctx.moveTo(0, canvas.height - 1);
+      ctx.lineTo(canvas.width, canvas.height - 1);
+      ctx.stroke();
+
+      // 스테이지가 멈춰있을 때 안내(게임 내부 텍스트)
+      if (!stageActive && running) {
+        ctx.fillStyle = "rgba(0,0,0,0.40)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#fff";
+        ctx.font = "18px system-ui";
+        ctx.fillText("시작을 눌러 스테이지 시작", canvas.width / 2, canvas.height / 2);
+
+        ctx.textAlign = "start";
+      }
+
+      // 루프가 멈춰있고(대기)일 때도 가이드 1줄
+      if (!running) {
+        ctx.fillStyle = "rgba(0,0,0,0.35)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#fff";
+        ctx.font = "18px system-ui";
+        ctx.fillText("시작을 눌러 플레이", canvas.width / 2, canvas.height / 2);
+
+        ctx.textAlign = "start";
+      }
+    }
+
+    function drawOverlay(type, text1, text2) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#fff";
+      ctx.font = "30px system-ui";
+      ctx.fillText(text1, canvas.width / 2, canvas.height / 2 - 12);
+
+      ctx.font = "16px system-ui";
+      ctx.fillText(text2, canvas.width / 2, canvas.height / 2 + 22);
+
+      ctx.textAlign = "start";
+    }
+
+    function drawFailFinal() {
+      const s = currentStage();
+
+      ctx.fillStyle = "rgba(0,0,0,0.60)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.font = "26px system-ui";
+      ctx.fillText("FAILED", canvas.width / 2, canvas.height / 2 - 26);
+
+      ctx.font = "16px system-ui";
+      ctx.fillText(`${s.label}에서 실패`, canvas.width / 2, canvas.height / 2 + 6);
+      ctx.fillText(`클릭 ${hitCount}개 / 필요 ${s.pass}개`, canvas.width / 2, canvas.height / 2 + 30);
+      ctx.fillText("리셋을 눌러 다시 시작", canvas.width / 2, canvas.height / 2 + 56);
+
+      ctx.textAlign = "start";
+    }
+
+    // 입력: 터치/클릭
+    function handlePointer(e) {
+      if (!running) return;
+      if (!stageActive) return;
+      if (pausedOverlay) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+      for (let i = papers.length - 1; i >= 0; i--) {
+        const p = papers[i];
+        if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) {
+          papers.splice(i, 1);
+          hitCount += 1;
+          resolvedCount += 1;
+          return;
+        }
+      }
+    }
+
+    canvas.addEventListener("pointerdown", handlePointer);
+
+    startBtn.addEventListener("click", () => {
+      // 오디오 정책 대응
+      ensureAudio();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      // 루프가 멈춰있으면 루프 시작
+      startLoopIfNeeded();
+
+      // 현재 스테이지가 진행 중이 아니면(대기/성공 후) 스테이지 시작
+      if (!stageActive) {
+        startStage();
+      }
+    });
+
+    restartBtn.addEventListener("click", () => {
+      resetGame();
+    });
+
+    muteBtn.addEventListener("click", toggleMusic);
+
+    // 초기 화면
+    updateHUD();
+    draw();
+  </script>
+</body>
+</html>
